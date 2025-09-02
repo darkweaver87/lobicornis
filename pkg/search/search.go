@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -94,7 +95,9 @@ func (f Finder) GetCurrentPull(ctx context.Context, issues []*github.Issue) (*gi
 
 	if len(inProgress) == 0 {
 		f.displayIssues(issues)
-
+		sort.Slice(issues, func(i, j int) bool {
+			return issues[i].GetNumber() < issues[j].GetNumber()
+		})
 		return issues[0], nil
 	}
 

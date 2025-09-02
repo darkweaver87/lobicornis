@@ -55,3 +55,15 @@ func WithExcludedLabels(labels ...string) Parameter {
 		return " " + labelsFilter
 	}
 }
+
+// WithRepository add a search filter by repository.
+func WithRepository(repository string) Parameter {
+	if repository == "" {
+		return func() string {
+			return NoOp()
+		}
+	}
+	return func() string {
+		return " " + fmt.Sprintf("repo:%s", repository)
+	}
+}

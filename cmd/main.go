@@ -10,10 +10,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/go-github/v74/github"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/traefik/lobicornis/v3/pkg/conf"
+	"github.com/traefik/lobicornis/v3/pkg/locker"
+	"github.com/traefik/lobicornis/v3/pkg/memorylocker"
 	"github.com/traefik/lobicornis/v3/pkg/repository"
 	"github.com/traefik/lobicornis/v3/pkg/search"
 	"golang.org/x/oauth2"
@@ -61,7 +64,7 @@ func main() {
 			log.Fatal().Err(err).Msg("unable to launch the server")
 		}
 	} else {
-		err = run(cfg)
+		err = run(cfg, event{})
 		if err != nil {
 			log.Fatal().Err(err).Msg("unable to run the command")
 		}
@@ -69,14 +72,18 @@ func main() {
 }
 
 func launch(cfg conf.Configuration) error {
-	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodGet {
-			log.Error().Str("method", req.Method).Msg("Invalid http method")
-			http.Error(rw, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-			return
-		}
+	router := chi.NewRouter()
+	var l locker.Locker
 
-		err := run(cfg)
+	if cfg.Server.Webhook.Enabled {
+		l = memorylocker.New()
+
+		router.Post("/webhook", func(rw http.ResponseWriter, req *http.Request) {
+			processWebhook(cfg, l, rw, req)
+		})
+	}
+	router.Get("/", func(rw http.ResponseWriter, req *http.Request) {
+		err := run(cfg, event{})
 		if err != nil {
 			log.Error().Err(err).Msg("Report error")
 			http.Error(rw, "Report error.", http.StatusInternalServerError)
@@ -91,10 +98,10 @@ func launch(cfg conf.Configuration) error {
 		}
 	})
 
-	return http.ListenAndServe(":"+strconv.Itoa(cfg.Server.Port), handler)
+	return http.ListenAndServe(":"+strconv.Itoa(cfg.Server.Port), router)
 }
 
-func run(cfg conf.Configuration) error {
+func run(cfg conf.Configuration, ev event) error {
 	ctx := context.Background()
 
 	client := newGitHubClient(ctx, cfg.Github.Token, cfg.Github.URL)
@@ -104,7 +111,8 @@ func run(cfg conf.Configuration) error {
 	// search PRs with the FF merge method.
 	ffResults, err := finder.Search(ctx, cfg.Github.User,
 		search.WithLabels(cfg.Markers.MergeMethodPrefix+conf.MergeMethodFastForward),
-		search.WithExcludedLabels(cfg.Markers.NoMerge, cfg.Markers.NeedMerge))
+		search.WithExcludedLabels(cfg.Markers.NoMerge, cfg.Markers.NeedMerge),
+		search.WithRepository(ev.repositoryFullName))
 	if err != nil {
 		return err
 	}
@@ -112,10 +120,13 @@ func run(cfg conf.Configuration) error {
 	// search NeedMerge
 	results, err := finder.Search(ctx, cfg.Github.User,
 		search.WithLabels(cfg.Markers.NeedMerge),
-		search.WithExcludedLabels(cfg.Markers.NeedHumanMerge, cfg.Markers.NoMerge))
+		search.WithExcludedLabels(cfg.Markers.NeedHumanMerge, cfg.Markers.NoMerge),
+		search.WithRepository(ev.repositoryFullName))
 	if err != nil {
 		return err
 	}
+
+	log.Debug().Int("issues", len(results)).Msg("Found issues")
 
 	for fullName, issues := range results {
 		logger := log.With().Str("repo", fullName).Logger()
@@ -136,6 +147,11 @@ func run(cfg conf.Configuration) error {
 		if issue == nil {
 			logger.Debug().Msg("Nothing to merge.")
 			continue
+		}
+
+		if ev.pr > 0 && issue.GetNumber() != ev.pr {
+			logger.Info().Msgf("Ignoring event on %d, current issue %d", ev.pr, issue.GetNumber())
+			return nil
 		}
 
 		repo := repository.New(client, fullName, cfg.Github.Token, cfg.Markers, cfg.Retry, cfg.Git, repoConfig, cfg.Extra)

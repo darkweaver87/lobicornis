@@ -37,7 +37,14 @@ type Git struct {
 
 // Server the server configuration.
 type Server struct {
-	Port int `yaml:"port"`
+	Port    int     `yaml:"port"`
+	Webhook Webhook `yaml:"webhook"`
+}
+
+// Webhook the webhook configuration.
+type Webhook struct {
+	Enabled      bool   `yaml:"enabled"`
+	SecretEnvVar string `yaml:"secretEnvVar,omitempty"`
 }
 
 // Markers the markers configuration.
